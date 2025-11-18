@@ -1,10 +1,6 @@
-name: Windows GitHub CI
+name: Windows_amd64 CI
 
 on:
-  push:
-    branches: [ master, main, '8.*' ]
-  pull_request:
-    branches: [ master, main, '8.*' ]
   # 支持手动触发
   workflow_dispatch:
   # 当创建新标签时自动发布
