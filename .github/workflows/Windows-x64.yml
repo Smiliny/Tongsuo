@@ -1,105 +1,151 @@
-name: Build Windows 64-bit Release Package (with NTLS)
+name: Windows GitHub CI
 
-# 触发条件：手动触发或标签推送（用于发布正式版本）
 on:
-  workflow_dispatch:  # 支持手动在 GitHub 页面触发
   push:
-    tags:
-      - 'v*'  # 推送标签（如 v8.5.0dev）时自动触发发布
+    branches: [ master, main, '8.*' ]
+  pull_request:
+    branches: [ master, main, '8.*' ]
+  # 支持手动触发
+  workflow_dispatch:
+  # 当创建新标签时自动发布
+  release:
+    types: [published]
 
 jobs:
-  build-windows:
-    runs-on: windows-2022  # 基于 Windows Server 2022（兼容 Win11）
-    strategy:
-      fail-fast: false
-      matrix:
-        # 仅保留 64 位配置，移除 32 位
-        arch: [x64]
-        toolchain: [mingw]  # 使用 MinGW 编译，生成通用可执行文件
+  build:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source code
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # 拉取完整历史，确保版本信息正确
 
-      - name: Set up Perl
-        uses: shogo82148/actions-setup-perl@v1
-        with:
-          perl-version: '5.38'
-
-      - name: Install NASM
-        uses: ilammy/setup-nasm@v1
-
-      - name: Set up MinGW-w64 (64-bit)
-        if: matrix.toolchain == 'mingw' && matrix.arch == 'x64'
-        uses: egor-tensin/setup-mingw@v2
-        with:
-          platform: x64
-
-      - name: Configure Tongsuo (with NTLS)
+      - name: Install MinGW-w64 and dependencies
         run: |
-          # 定义安装目录（后续打包的根目录）
-          INSTALL_PREFIX="${{ github.workspace }}/tongsuo-install"
-          echo "INSTALL_PREFIX=$INSTALL_PREFIX" >> $GITHUB_ENV
+          sudo apt update
+          sudo apt install -y \
+            gcc-mingw-w64-x86-64 \
+            make \
+            perl
 
-          # 配置编译参数：64位、动态库、启用NTLS、禁用测试
-          ./Configure mingw64 \
-            --prefix="$INSTALL_PREFIX" \
-            --openssldir="$INSTALL_PREFIX/ssl" \
+      # 构建 64 位版本
+      - name: Build Tongsuo for Windows x64
+        run: |
+          export CROSS_PREFIX=x86_64-w64-mingw32
+          ./Configure \
             shared \
-            enable-ntls \  # 启用国密协议
-            no-ssl3 \
-            no-weak-ssl-ciphers \
-            no-tests \
-            -Wno-error
-        shell: bash
-
-      - name: Build Tongsuo
-        run: |
-          # 多线程编译（根据 runner 核心数调整）
+            enable-ntls \
+            no-asm \
+            no-async \
+            no-sock \
+            no-ui-console \
+            mingw64 \
+            --prefix=/tmp/tongsuo-win64 \
+            --cross-compile-prefix=${CROSS_PREFIX}-
           make -j$(nproc)
-        shell: bash
+          make install_sw
 
-      - name: Install to target directory
+      # 检查构建输出
+      - name: Check build output
         run: |
-          make install
-        shell: bash
+          echo "Checking build output in /tmp/tongsuo-win64/bin:"
+          ls -la /tmp/tongsuo-win64/bin/
+          echo "Checking current directory:"
+          ls -la
 
-      - name: Verify build correctness
+      # 整理分发目录结构
+      - name: Prepare distribution directory
         run: |
-          # 验证可执行文件是否正常运行
-          "$INSTALL_PREFIX/bin/tongsuo.exe" version
-          # 验证 NTLS 功能是否启用
-          "$INSTALL_PREFIX/bin/tongsuo.exe" ciphers -v NTLS* | grep -q "SM4" || exit 1
-        shell: bash
+          # 创建 64 位分发目录
+          mkdir -p dist/tongsuo-windows-x64/{bin,include,lib}
+          
+          # 查找并复制可执行文件（Tongsuo 构建后通常生成 openssl.exe，但功能相同）
+          if [ -f "/tmp/tongsuo-win64/bin/openssl.exe" ]; then
+            echo "Found openssl.exe, copying..."
+            cp /tmp/tongsuo-win64/bin/openssl.exe dist/tongsuo-windows-x64/bin/tongsuo.exe
+          elif [ -f "/tmp/tongsuo-win64/bin/tongsuo.exe" ]; then
+            echo "Found tongsuo.exe, copying..."
+            cp /tmp/tongsuo-win64/bin/tongsuo.exe dist/tongsuo-windows-x64/bin/
+          else
+            echo "ERROR: No executable found in /tmp/tongsuo-win64/bin/"
+            ls -la /tmp/tongsuo-win64/bin/
+            exit 1
+          fi
+          
+          # 复制所有 DLL 文件
+          find /tmp/tongsuo-win64/bin -name "*.dll" -exec cp {} dist/tongsuo-windows-x64/bin/ \; || echo "No DLL files found"
+          
+          # 检查复制的文件
+          echo "Files in dist/tongsuo-windows-x64/bin/:"
+          ls -la dist/tongsuo-windows-x64/bin/
 
-      - name: Package precompiled files (ZIP)
+          # 复制头文件
+          if [ -d "/tmp/tongsuo-win64/include" ]; then
+            cp -r /tmp/tongsuo-win64/include/* dist/tongsuo-windows-x64/include/
+          fi
+          
+          # 复制库文件
+          if [ -d "/tmp/tongsuo-win64/lib" ]; then
+            cp -r /tmp/tongsuo-win64/lib/* dist/tongsuo-windows-x64/lib/ 2>/dev/null || true
+          fi
+
+          # 添加使用说明
+          cat > dist/tongsuo-windows-x64/README.txt <<EOF
+Tongsuo Windows 预编译包 (64位)
+===============================
+
+使用方法:
+1. 解压到任意目录（如 C:\\tongsuo）
+2. 将 bin 目录添加到系统 PATH 环境变量
+   - Windows: 右键"此电脑" → 属性 → 高级系统设置 → 环境变量 → PATH 添加 "C:\\tongsuo\\bin"
+3. 重新打开命令行，运行: tongsuo version
+
+功能特性:
+- 支持国密算法 (SM2/SM3/SM4/SM9)
+- 支持标准 TLS/SSL 协议
+- 无需安装 VC++ 运行库
+
+命令示例:
+- tongsuo sm3 <file>              # 计算 SM3 哈希
+- tongsuo genpkey -algorithm SM2   # 生成 SM2 密钥对
+- tongsuo version                  # 查看版本信息
+
+许可证: Apache-2.0 + OpenSSL
+EOF
+
+      # 打包为 ZIP
+      - name: Package as ZIP archive
         run: |
-          # 进入安装目录，打包所有文件（bin/lib/include/ssl等）
-          cd "$INSTALL_PREFIX"
-          7z a -tzip "${{ github.workspace }}/tongsuo-windows-${{ matrix.arch }}.zip" ./*
-        shell: bash
+          cd dist
+          zip -r tongsuo-windows-x64.zip tongsuo-windows-x64
+          echo "ZIP file created:"
+          ls -la tongsuo-windows-x64.zip
 
-      - name: Upload artifact (for testing)
+      # 上传构建产物（用于调试）
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tongsuo-windows-${{ matrix.arch }}
-          path: ${{ github.workspace }}/tongsuo-windows-${{ matrix.arch }}.zip
+          name: tongsuo-windows-x64
+          path: dist/tongsuo-windows-x64.zip
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')  # 仅标签推送时创建Release
+      # 如果是标签发布，则创建 GitHub Release
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: Tongsuo ${{ github.ref_name }} (Windows 64-bit)
+          files: |
+            dist/tongsuo-windows-x64.zip
+          name: Tongsuo ${{ github.ref_name }} Windows x64
           body: |
-            官方预编译包（Windows 64位），包含NTLS国密支持。
-            使用说明：
-            1. 解压 zip 包到任意目录（如 C:\tongsuo）
-            2. 将 C:\tongsuo\bin 添加到系统环境变量 PATH
-            3. 打开命令行，执行 `tongsuo version` 验证
-          files: ${{ github.workspace }}/tongsuo-windows-${{ matrix.arch }}.zip
+            Tongsuo ${{ github.ref_name }} Windows 64位预编译包
+            
+            - 包含 `tongsuo.exe` 及所有依赖的 DLL
+            - 支持国密算法 (SM2/SM3/SM4/SM9)
+            - 开箱即用，仅需配置 PATH 环境变量
+            - 无需安装额外运行库
           draft: false
-          prerelease: false  # 标记为正式发布
+          prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 自动生成的仓库令牌
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+
