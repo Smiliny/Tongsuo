@@ -88,30 +88,6 @@ jobs:
             cp -r /tmp/tongsuo-win64/lib/* dist/tongsuo-windows-x64/lib/ 2>/dev/null || true
           fi
 
-          # 添加使用说明
-          cat > dist/tongsuo-windows-x64/README.txt <<EOF
-Tongsuo Windows 预编译包 (64位)
-===============================
-
-使用方法:
-1. 解压到任意目录（如 C:\\tongsuo）
-2. 将 bin 目录添加到系统 PATH 环境变量
-   - Windows: 右键"此电脑" → 属性 → 高级系统设置 → 环境变量 → PATH 添加 "C:\\tongsuo\\bin"
-3. 重新打开命令行，运行: tongsuo version
-
-功能特性:
-- 支持国密算法 (SM2/SM3/SM4/SM9)
-- 支持标准 TLS/SSL 协议
-- 无需安装 VC++ 运行库
-
-命令示例:
-- tongsuo sm3 <file>              # 计算 SM3 哈希
-- tongsuo genpkey -algorithm SM2   # 生成 SM2 密钥对
-- tongsuo version                  # 查看版本信息
-
-许可证: Apache-2.0 + OpenSSL
-EOF
-
       # 打包为 ZIP
       - name: Package as ZIP archive
         run: |
