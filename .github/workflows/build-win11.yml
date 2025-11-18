@@ -1,0 +1,45 @@
+name: Build Tongsuo for Windows11
+
+on:
+  push:
+    tags:
+      - "*"          # 只要打 tag 就触发
+  workflow_dispatch: # 也可以手动点按钮触发
+
+jobs:
+  windows-mingw:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 拉代码
+        uses: actions/checkout@v4
+        with:
+          ref: 8.5.0          # 指定版本，可改成 master
+
+      - name: 2. 装 mingw-w64 工具链
+        run: |
+          sudo apt update
+          sudo apt install -y mingw-w64 make perl
+
+      - name: 3. 交叉编译
+        run: |
+          export CC=x86_64-w64-mingw32-gcc
+          ./Configure mingw64 \
+              enable-ntls enable-sm2 enable-sm3 enable-sm4 \
+              shared \
+              --prefix=$PWD/build-win64
+          make -j$(nproc)
+          make install
+
+      - name: 4. 打包
+        run: |
+          tar -zcf tongsuo-8.5.0-win11-x64-mingw.tar.gz -C build-win64 .
+
+      - name: 5. 上传到 Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: tongsuo-*.tar.gz
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: "Tongsuo ${{ github.ref_name }} Windows11 预编译包"
+          body: "64-bit DLL + LIB + 头文件，开箱即用"
