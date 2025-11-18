@@ -32,11 +32,10 @@ jobs:
             enable-ntls \
             no-asm \
             no-async \
-            no-sock \
-            no-ui-console \
             mingw64 \
             --prefix=/tmp/tongsuo-win64 \
-            --cross-compile-prefix=${CROSS_PREFIX}-
+            --cross-compile-prefix=${CROSS_PREFIX}- \
+            -Wno-error 
           make -j$(nproc)
           make install_sw
 
