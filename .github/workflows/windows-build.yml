@@ -1,13 +1,31 @@
-name: Windows CI (x64 + x86)
+name: Windows CI & Release
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  # 建议改为 push tags 触发，更符合自动化习惯
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 使用矩阵策略同时构建 x64 和 x86
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            mingw_pkg: gcc-mingw-w64-x86-64
+            cross_prefix: x86_64-w64-mingw32
+            target: mingw64
+            install_prefix: /tmp/tongsuo-win64
+            zip_name: tongsuo-windows-x64
+          - arch: x86
+            mingw_pkg: gcc-mingw-w64-i686
+            cross_prefix: i686-w64-mingw32
+            target: mingw
+            install_prefix: /tmp/tongsuo-win32
+            zip_name: tongsuo-windows-x86
 
     steps:
       - name: Checkout code
@@ -16,136 +34,75 @@ jobs:
       - name: Install MinGW-w64 and dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            gcc-mingw-w64-x86-64 \
-            gcc-mingw-w64-i686 \
-            make \
-            perl
+          sudo apt install -y ${{ matrix.mingw_pkg }} make perl
 
-      # ====================== 构建 64 位版本 ======================
-      - name: Build Tongsuo for Windows x64
+      - name: Build Tongsuo for Windows ${{ matrix.arch }}
         run: |
-          make clean || true
-          export CROSS_PREFIX=x86_64-w64-mingw32
+          export CROSS_PREFIX=${{ matrix.cross_prefix }}
           ./Configure \
             shared \
             enable-ntls \
             no-asm \
             no-async \
-            mingw64 \
-            --prefix=/tmp/tongsuo-win64 \
+            ${{ matrix.target }} \
+            --prefix=${{ matrix.install_prefix }} \
             --cross-compile-prefix=${CROSS_PREFIX}- \
-            -Wno-error
+            -Wno-error 
           make -j$(nproc)
           make install_sw
 
-      # ====================== 构建 32 位版本 ======================
-      - name: Build Tongsuo for Windows x86
+      - name: Prepare distribution directory
         run: |
-          make clean || true
-          export CROSS_PREFIX=i686-w64-mingw32
-          ./Configure \
-            shared \
-            enable-ntls \
-            no-asm \
-            no-async \
-            mingw \
-            --prefix=/tmp/tongsuo-win32 \
-            --cross-compile-prefix=${CROSS_PREFIX}- \
-            -Wno-error
-          make -j$(nproc)
-          make install_sw
-
-      # 检查构建输出
-      - name: Check build output
-        run: |
-          echo "Checking build output in /tmp/tongsuo-win64/bin:"
-          ls -la /tmp/tongsuo-win64/bin/
-          echo "Checking build output in /tmp/tongsuo-win32/bin:"
-          ls -la /tmp/tongsuo-win32/bin/
-          echo "Checking current directory:"
-          ls -la
-
-      # ====================== 打包 x64 ======================
-      - name: Prepare distribution directory x64
-        run: |
-          mkdir -p dist/tongsuo-windows-x64/{bin,include,lib}
-          if [ -f "/tmp/tongsuo-win64/bin/openssl.exe" ]; then
-            echo "Found openssl.exe, copying..."
-            cp /tmp/tongsuo-win64/bin/openssl.exe dist/tongsuo-windows-x64/bin/tongsuo.exe
-          elif [ -f "/tmp/tongsuo-win64/bin/tongsuo.exe" ]; then
-            echo "Found tongsuo.exe, copying..."
-            cp /tmp/tongsuo-win64/bin/tongsuo.exe dist/tongsuo-windows-x64/bin/
+          mkdir -p dist/${{ matrix.zip_name }}/{bin,include,lib}
+          
+          # 智能查找并复制可执行文件
+          if [ -f "${{ matrix.install_prefix }}/bin/openssl.exe" ]; then
+            cp ${{ matrix.install_prefix }}/bin/openssl.exe dist/${{ matrix.zip_name }}/bin/tongsuo.exe
+          elif [ -f "${{ matrix.install_prefix }}/bin/tongsuo.exe" ]; then
+            cp ${{ matrix.install_prefix }}/bin/tongsuo.exe dist/${{ matrix.zip_name }}/bin/
           else
-            echo "ERROR: No executable found in /tmp/tongsuo-win64/bin/"
-            ls -la /tmp/tongsuo-win64/bin/
+            echo "ERROR: No executable found!"
+            ls -la ${{ matrix.install_prefix }}/bin/ || true
             exit 1
           fi
-          find /tmp/tongsuo-win64/bin -name "*.dll" -exec cp {} dist/tongsuo-windows-x64/bin/ \; || echo "No DLL files found"
-          echo "Files in dist/tongsuo-windows-x64/bin/:"
-          ls -la dist/tongsuo-windows-x64/bin/
-          if [ -d "/tmp/tongsuo-win64/include" ]; then
-            cp -r /tmp/tongsuo-win64/include/* dist/tongsuo-windows-x64/include/
-          fi
-          if [ -d "/tmp/tongsuo-win64/lib" ]; then
-            cp -r /tmp/tongsuo-win64/lib/* dist/tongsuo-windows-x64/lib/ 2>/dev/null || true
-          fi
-          cd dist
-          zip -r tongsuo-windows-x64.zip tongsuo-windows-x64
-          echo "ZIP file created:"
-          ls -la tongsuo-windows-x64.zip
+          
+          # 复制依赖 DLL
+          find ${{ matrix.install_prefix }}/bin -name "*.dll" -exec cp {} dist/${{ matrix.zip_name }}/bin/ \; 2>/dev/null || true
+          
+          # 复制头文件和库文件
+          cp -r ${{ matrix.install_prefix }}/include/* dist/${{ matrix.zip_name }}/include/ 2>/dev/null || true
+          cp -r ${{ matrix.install_prefix }}/lib/* dist/${{ matrix.zip_name }}/lib/ 2>/dev/null || true
 
-      # ====================== 打包 x86 ======================
-      - name: Prepare distribution directory x86
+      - name: Package as ZIP archive
         run: |
-          mkdir -p dist/tongsuo-windows-x86/{bin,include,lib}
-          if [ -f "/tmp/tongsuo-win32/bin/openssl.exe" ]; then
-            echo "Found openssl.exe, copying..."
-            cp /tmp/tongsuo-win32/bin/openssl.exe dist/tongsuo-windows-x86/bin/tongsuo.exe
-          elif [ -f "/tmp/tongsuo-win32/bin/tongsuo.exe" ]; then
-            echo "Found tongsuo.exe, copying..."
-            cp /tmp/tongsuo-win32/bin/tongsuo.exe dist/tongsuo-windows-x86/bin/
-          else
-            echo "ERROR: No executable found in /tmp/tongsuo-win32/bin/"
-            ls -la /tmp/tongsuo-win32/bin/
-            exit 1
-          fi
-          find /tmp/tongsuo-win32/bin -name "*.dll" -exec cp {} dist/tongsuo-windows-x86/bin/ \; || echo "No DLL files found"
-          echo "Files in dist/tongsuo-windows-x86/bin/:"
-          ls -la dist/tongsuo-windows-x86/bin/
-          if [ -d "/tmp/tongsuo-win32/include" ]; then
-            cp -r /tmp/tongsuo-win32/include/* dist/tongsuo-windows-x86/include/
-          fi
-          if [ -d "/tmp/tongsuo-win32/lib" ]; then
-            cp -r /tmp/tongsuo-win32/lib/* dist/tongsuo-windows-x86/lib/ 2>/dev/null || true
-          fi
           cd dist
-          zip -r tongsuo-windows-x86.zip tongsuo-windows-x86
-          echo "ZIP file created:"
-          ls -la tongsuo-windows-x86.zip
+          zip -r ${{ matrix.zip_name }}.zip ${{ matrix.zip_name }}
+          ls -la ${{ matrix.zip_name }}.zip
 
-      # 上传构建产物
-      - name: Upload artifact x64
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tongsuo-windows-x64
-          path: dist/tongsuo-windows-x64.zip
+          name: ${{ matrix.zip_name }}
+          path: dist/${{ matrix.zip_name }}.zip
 
-      - name: Upload artifact x86
-        uses: actions/upload-artifact@v4
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: tongsuo-windows-x86
-          path: dist/tongsuo-windows-x86.zip
+          path: dist
+          merge-multiple: true
 
-      # 发布 Release
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/tongsuo-windows-x64.zip
             dist/tongsuo-windows-x86.zip
-          name: Tongsuo ${{ github.ref_name }} Windows (x64 + x86)
+          name: Tongsuo ${{ github.ref_name }} Windows x64 + x86
           body: |
             Tongsuo ${{ github.ref_name }} Windows 预编译包
 
